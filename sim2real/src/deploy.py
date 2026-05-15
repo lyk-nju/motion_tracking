@@ -33,9 +33,10 @@ def get_config(policy_cfg_path: str) -> DictToClass:
     return policy_cfg
 
 class Controller:
-    def __init__(self, args, ctrl_cfg):
+    def __init__(self, args, ctrl_cfg, tracking_cfg_path: str = "config/tracking.yaml"):
         self.args = args
         self.config = ctrl_cfg
+        self.tracking_cfg_path = tracking_cfg_path
         self.remote_controller = RemoteController()
         self.control_dt = 1.0 / self.config.control_freq
 
@@ -87,7 +88,7 @@ class Controller:
         init_cmd_hg(self.low_cmd, self.mode_machine_, self.mode_pr_)
 
         self.policies = {
-            "tracking": TrackingPolicyRaw("tracking", get_config("config/tracking.yaml"), self),
+            "tracking": TrackingPolicyRaw("tracking", get_config(self.tracking_cfg_path), self),
         }
         self.current_policy: Optional[Policy] = None
         self.pending_policy: Optional[Policy] = None
@@ -271,12 +272,15 @@ if __name__ == "__main__":
     parser.add_argument("--net", type=str, default=None)
     parser.add_argument("--sim2sim", action='store_true')
     parser.add_argument("--real", action='store_true')
+    parser.add_argument("--tracking-config", type=str, default="config/tracking.yaml",
+                        help="Path to tracking config (e.g. config/tracking_floodnet.yaml)")
     args = parser.parse_args()
     assert args.sim2sim ^ args.real, "Please specify either sim2sim or real."
 
     ChannelFactoryInitialize(0, args.net)
 
-    controller = Controller(args, get_config("config/controller.yaml"))
+    controller = Controller(args, get_config("config/controller.yaml"),
+                            tracking_cfg_path=args.tracking_config)
 
     controller.zero_torque_state()
     controller.move_to_default_qpos()
