@@ -3,9 +3,6 @@ import threading
 from collections import deque
 from typing import Dict, List, Optional, Tuple
 
-import linuxfd
-import select
-
 
 class DictToClass:
     def __init__(self, data_dict):
@@ -25,6 +22,8 @@ class Timer(object):
     def __create_timerfd(interval: float):
         '''Produces a timerfd file descriptor from the kernel
         '''
+        import linuxfd
+        import select
         tfd = linuxfd.timerfd(rtc=True, nonBlocking=True)
         tfd.settime(interval, interval)
         epl = select.epoll()
