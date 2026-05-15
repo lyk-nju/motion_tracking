@@ -1,0 +1,41 @@
+# Socket FloodNet online configuration for motion_tracking runtime.
+#
+# This is the RECOMMENDED demo config. It consumes reference chunks from
+# Text2Humanoid's SocketBackend via TCP (no filesystem polling).
+#
+# Startup:
+#   1. Start Text2Humanoid with configs/system/demo_socket.yaml
+#   2. Run:
+#      PYTHONPATH=sim2real/src python sim2real/src/deploy.py --sim2sim \
+#        --tracking-config config/tracking_socket_floodnet.yaml
+#
+# The consumer connects to the producer's TCP port and drains chunks
+# via SocketFloodNetSource.post_step().
+
+motion_source: "socket_floodnet"
+socket_host: "127.0.0.1"
+socket_port: 15555
+
+# ---- reuse existing fields from tracking_floodnet.yaml ----
+future_steps: [0, 1, 2, 3, 4, -1, -2, -4, -8, -12, -16]
+policy_path: "assets/ckpts/G1TRACKING-250403-1/policy.onnx"
+compliance_flag_value: 1.0
+compliance_flag_threshold: 10.0
+transition_steps: 100
+switch_tail_keep_steps: 8
+
+dataset_joint_names: ["left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint", "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint", "right_hip_pitch_joint", "right_hip_roll_joint", "right_hip_yaw_joint", "right_knee_joint", "right_ankle_pitch_joint", "right_ankle_roll_joint", "waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint", "left_shoulder_pitch_joint", "left_shoulder_roll_joint", "left_shoulder_yaw_joint", "left_elbow_joint", "left_wrist_roll_joint", "left_wrist_pitch_joint", "left_wrist_yaw_joint", "right_shoulder_pitch_joint", "right_shoulder_roll_joint", "right_shoulder_yaw_joint", "right_elbow_joint", "right_wrist_roll_joint", "right_wrist_pitch_joint", "right_wrist_yaw_joint"]
+
+root_linacc_history_steps: [0, 1, 2, 3, 4, 8, 12, 16, 20]
+root_angvel_history_steps: [0, 1, 2, 3, 4, 8, 12, 16, 20]
+projected_gravity_history_steps: [0, 1, 2, 3, 4, 8, 12, 16, 20]
+joint_pos_history_steps: [0, 1, 2, 3, 4, 8, 12, 16, 20]
+joint_vel_history_steps: [0, 1, 2, 3, 4, 8, 12, 16, 20]
+prev_action_steps: 8
+
+action_clip: 10.0
+action_joint_names: ["left_hip_pitch_joint", "right_hip_pitch_joint", "waist_yaw_joint", "left_hip_roll_joint", "right_hip_roll_joint", "waist_roll_joint", "left_hip_yaw_joint", "right_hip_yaw_joint", "waist_pitch_joint", "left_knee_joint", "right_knee_joint", "left_shoulder_pitch_joint", "right_shoulder_pitch_joint", "left_ankle_pitch_joint", "right_ankle_pitch_joint", "left_shoulder_roll_joint", "right_shoulder_roll_joint", "left_ankle_roll_joint", "right_ankle_roll_joint", "left_shoulder_yaw_joint", "right_shoulder_yaw_joint", "left_elbow_joint", "right_elbow_joint", "left_wrist_roll_joint", "right_wrist_roll_joint", "left_wrist_pitch_joint", "right_wrist_pitch_joint", "left_wrist_yaw_joint", "right_wrist_yaw_joint"]
+action_scale: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 1.0, 1.0, 0.5, 0.5, 1.0, 1.0, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+
+kps_real: [99.1, 99.1, 40.2, 99.1, 28.5, 28.5, 99.1, 99.1, 40.2, 99.1, 28.5, 28.5, 40.2, 28.5, 28.5, 14.3, 14.3, 14.3, 14.3, 14.3, 8.6, 8.6, 14.3, 14.3, 14.3, 14.3, 14.3, 8.6, 8.6]
+kds_real: [6.3, 6.3, 2.6, 6.3, 1.8, 1.8, 6.3, 6.3, 2.6, 6.3, 1.8, 1.8, 2.6, 1.8, 1.8, 0.9, 0.9, 0.9, 0.9, 0.9, 0.5, 0.5, 0.9, 0.9, 0.9, 0.9, 0.9, 0.5, 0.5]
