@@ -210,6 +210,31 @@ class MotionSourceBase(ABC):
         return
 
 
+class FloodNetMotionSource(MotionSourceBase):
+    """Minimal motion source that consumes a pre-exported G1ReferenceChunk NPZ.
+
+    Configure with motion_source: floodnet in tracking.yaml.  The floodnet
+    source reuses the same _load_motions() path (motions / motion_clips) so
+    that a reference clip exported by Text2Humanoid can be consumed directly
+    by the real tracking runtime without any online bridge.
+    """
+
+    def __init__(self, policy: "TrackingPolicyRaw", policy_cfg: DictToClass):
+        super().__init__(policy, policy_cfg)
+
+    def request_motion(self, name: str) -> bool:
+        if name not in self.motions:
+            print(f"[FloodNetMotionSource] Unknown motion '{name}'")
+            return False
+        if self.policy.current_done:
+            return self.append_motion_from_tail(name)
+        print(
+            f"[FloodNetMotionSource] Reject '{name}': "
+            f"current='{self.policy.current_name}', done={self.policy.current_done}"
+        )
+        return False
+
+
 class UDPMotionSource(MotionSourceBase):
     def __init__(self, policy: "TrackingPolicyRaw", policy_cfg: DictToClass):
         self.udp_enable = bool(getattr(policy_cfg, "udp_enable", True))

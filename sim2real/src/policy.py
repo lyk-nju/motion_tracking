@@ -258,8 +258,11 @@ class TrackingPolicyRaw(Policy):
         # Keep enough old reference so negative future_steps can access valid history right after a motion switch.
         self.switch_tail_keep_steps = max(configured_tail, self.future_history_len)
         self.motion_source = str(getattr(policy_cfg, "motion_source", "udp")).strip().lower()
-        if self.motion_source not in ("udp", "vr"):
-            raise ValueError(f"[TrackingPolicyRaw] motion_source must be 'udp' or 'vr', got '{self.motion_source}'")
+        if self.motion_source not in ("udp", "vr", "floodnet"):
+            raise ValueError(
+                f"[TrackingPolicyRaw] motion_source must be 'udp', 'vr', or 'floodnet', "
+                f"got '{self.motion_source}'"
+            )
         self.ref_max_len = int(getattr(policy_cfg, "ref_max_len", 2048))
 
         self.dataset_joint_names = list(getattr(policy_cfg, "dataset_joint_names", []))
@@ -284,6 +287,9 @@ class TrackingPolicyRaw(Policy):
         self.source: MotionSourceBase
         if self.motion_source == "udp":
             self.source = UDPMotionSource(self, policy_cfg)
+        elif self.motion_source == "floodnet":
+            from motion_sources import FloodNetMotionSource
+            self.source = FloodNetMotionSource(self, policy_cfg)
         else:
             self.source = VRMotionSource(self, policy_cfg)
         self.motions = self.source.motions
