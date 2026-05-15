@@ -213,14 +213,70 @@ class MotionSourceBase(ABC):
 class FloodNetMotionSource(MotionSourceBase):
     """Minimal motion source that consumes a pre-exported G1ReferenceChunk NPZ.
 
-    Configure with motion_source: floodnet in tracking.yaml.  The floodnet
-    source reuses the same _load_motions() path (motions / motion_clips) so
-    that a reference clip exported by Text2Humanoid can be consumed directly
-    by the real tracking runtime without any online bridge.
+    Configure with motion_source: floodnet in tracking.yaml.
+
+    Two loading modes:
+
+    1. Static motions (motions / motion_clips list) — same as UDPMotionSource.
+    2. floodnet_clip_path — directly load a single NPZ file (e.g. written by
+       Text2Humanoid's FloodNetFileBackend) as a motion named "floodnet_clip".
+       This is the preferred mode for connecting the Text2Humanoid offline
+       replay pipeline to the real tracking runtime.
+
+    The source reuses the existing _load_motions() path so that the policy's
+    future-horizon consumption works without change.
     """
 
     def __init__(self, policy: "TrackingPolicyRaw", policy_cfg: DictToClass):
+        self.floodnet_clip_path: Optional[str] = None
+        raw = getattr(policy_cfg, "floodnet_clip_path", None)
+        if raw is not None and str(raw).strip():
+            self.floodnet_clip_path = str(raw).strip()
+
         super().__init__(policy, policy_cfg)
+
+        if self.floodnet_clip_path is not None:
+            self._load_floodnet_clip(self.floodnet_clip_path)
+
+    def _load_floodnet_clip(self, path: str) -> None:
+        """Load a single NPZ clip exported by FloodNetFileBackend."""
+        p = Path(path)
+        if not p.is_absolute():
+            p = REAL_G1_ROOT / p
+        if not p.exists():
+            print(f"[FloodNetMotionSource] floodnet_clip_path not found: {p}")
+            return
+
+        data = np.load(str(p), allow_pickle=True)
+        joint_pos = data["dof_pos"].astype(np.float32)
+        root_pos = data["root_pos"].astype(np.float32)
+        root_rot_xyzw = data["root_rot"].astype(np.float32)
+        root_quat = np.concatenate([root_rot_xyzw[:, 3:4], root_rot_xyzw[:, :3]], axis=-1)
+
+        joint_names = data.get("joint_names", None)
+        if joint_names is None:
+            raise ValueError(
+                f"[FloodNetMotionSource] floodnet_clip_path is missing 'joint_names': {p}"
+            )
+        source_joint_names = []
+        for n in joint_names.tolist():
+            if isinstance(n, (bytes, np.bytes_)):
+                source_joint_names.append(n.decode("utf-8"))
+            else:
+                source_joint_names.append(str(n))
+        joint_pos = remap_joint_array_by_names(
+            joint_pos, source_joint_names, self.policy.obs_joint_names
+        )
+
+        self.motions["floodnet_clip"] = {
+            "joint_pos": joint_pos,
+            "root_quat": root_quat,
+            "root_pos": root_pos,
+        }
+        print(
+            f"[FloodNetMotionSource] Loaded floodnet clip '{p.name}' "
+            f"({joint_pos.shape[0]} frames)"
+        )
 
     def request_motion(self, name: str) -> bool:
         if name not in self.motions:
