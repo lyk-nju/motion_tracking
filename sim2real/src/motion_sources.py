@@ -1,4 +1,6 @@
 import json
+import socket
+import struct
 import time
 from abc import ABC
 from pathlib import Path
@@ -397,6 +399,94 @@ class FloodNetMotionSource(MotionSourceBase):
             f"current='{self.policy.current_name}', done={self.policy.current_done}"
         )
         return False
+
+
+class SocketFloodNetSource(MotionSourceBase):
+    """Online motion source that receives chunks via TCP from Text2Humanoid.
+
+    Connects to Text2Humanoid's SocketBackend and receives reference chunks
+    as length-prefixed JSON messages.  Each chunk is immediately appended to
+    the policy's reference buffer, bypassing file polling.
+
+    Configure with motion_source: socket_floodnet in tracking.yaml.
+    """
+
+    def __init__(self, policy: "TrackingPolicyRaw", policy_cfg: DictToClass):
+        self.socket_host: str = str(getattr(policy_cfg, "socket_host", "127.0.0.1"))
+        self.socket_port: int = int(getattr(policy_cfg, "socket_port", 15555))
+        self._sock: socket.socket | None = None
+        self._connected: bool = False
+        super().__init__(policy, policy_cfg)
+
+    def _connect(self) -> bool:
+        if self._connected:
+            return True
+        try:
+            self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self._sock.settimeout(0.5)
+            self._sock.connect((self.socket_host, self.socket_port))
+            self._sock.settimeout(2.0)
+            self._connected = True
+            print(f"[SocketFloodNetSource] Connected to {self.socket_host}:{self.socket_port}")
+            return True
+        except (ConnectionRefusedError, OSError):
+            return False
+
+    def _recv_exact(self, n: int) -> bytes:
+        data = b""
+        while len(data) < n:
+            chunk = self._sock.recv(n - len(data))
+            if not chunk:
+                raise ConnectionError("Socket closed")
+            data += chunk
+        return data
+
+    def _drain_messages(self) -> int:
+        if not self._connect():
+            return 0
+        count = 0
+        try:
+            self._sock.settimeout(0.01)
+            while True:
+                try:
+                    header = self._sock.recv(4)
+                    if len(header) < 4:
+                        break
+                    msg_len = struct.unpack(">I", header)[0]
+                    body = self._recv_exact(msg_len)
+                    msg = json.loads(body.decode("utf-8"))
+                    if msg.get("type") == "chunk":
+                        self._handle_chunk(msg)
+                        count += 1
+                except socket.timeout:
+                    break
+                except (ConnectionError, OSError):
+                    self._connected = False; self._sock = None
+                    break
+        finally:
+            self._sock.settimeout(2.0)
+        return count
+
+    def _handle_chunk(self, msg: dict) -> None:
+        payload = msg["payload"]
+        overlap = int(msg.get("overlap_frames", 4))
+        joint_pos_raw = np.array(payload["dof_pos"], dtype=np.float32)
+        root_pos_raw = np.array(payload["root_pos"], dtype=np.float32)
+        root_rot_xyzw = np.array(payload["root_rot"], dtype=np.float32)
+        root_quat = np.concatenate([root_rot_xyzw[:, 3:4], root_rot_xyzw[:, :3]], axis=-1)
+
+        joint_names_raw = payload.get("joint_names", None)
+        if joint_names_raw is not None:
+            source_names = [n.decode("utf-8") if isinstance(n, bytes) else str(n) for n in joint_names_raw]
+            joint_pos = remap_joint_array_by_names(joint_pos_raw, source_names, self.policy.obs_joint_names)
+        else:
+            joint_pos = joint_pos_raw
+
+        frames = {"joint_pos": joint_pos, "root_quat": root_quat, "root_pos": root_pos_raw}
+        self.policy.append_ref_frames(frames)
+
+    def post_step(self):
+        self._drain_messages()
 
 
 class UDPMotionSource(MotionSourceBase):
