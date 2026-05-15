@@ -1,15 +1,27 @@
 # FloodNet offline replay configuration for motion_tracking runtime.
 #
-# Usage:
-#   1. Run Text2Humanoid replay_trajectory.py to export a reference clip NPZ.
-#   2. Set floodnet_clip_path below to point to the exported NPZ.
-#   3. Run deploy.py --sim2sim with this config.
+# Two modes:
 #
-# The floodnet source loads the clip directly via floodnet_clip_path,
-# without needing a motions / motion_clips list.
+# A) Single clip (backward compat):
+#    floodnet_clip_path: "assets/data/example_reference_chunk.npz"
+#
+# B) Session-scoped multi-chunk (recommended for continuous replay):
+#    floodnet_session_dir: "path/to/floodnet_clips/<session_id>"
+#    floodnet_autoplay: true
+#    floodnet_refill_watermark: 30
+#
+# Usage:
+#   1. Run Text2Humanoid with backend: floodnet_file to populate the session dir.
+#   2. Set floodnet_session_dir below.
+#   3. Run: uv run src/deploy.py --sim2sim --tracking-config config/tracking_floodnet.yaml
 
 motion_source: "floodnet"
 floodnet_clip_path: "assets/data/example_reference_chunk.npz"
+
+# Uncomment for session-scoped multi-chunk mode:
+# floodnet_session_dir: "path/to/floodnet_clips/<session_id>"
+# floodnet_autoplay: true
+# floodnet_refill_watermark: 30
 
 # ---- reuse existing fields from tracking.yaml ----
 future_steps: [0, 1, 2, 3, 4, -1, -2, -4, -8, -12, -16]

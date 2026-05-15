@@ -211,43 +211,80 @@ class MotionSourceBase(ABC):
 
 
 class FloodNetMotionSource(MotionSourceBase):
-    """Minimal motion source that consumes a pre-exported G1ReferenceChunk NPZ.
+    """Motion source that consumes NPZ clips from Text2Humanoid.
 
     Configure with motion_source: floodnet in tracking.yaml.
 
-    Two loading modes:
+    Three loading modes:
 
-    1. Static motions (motions / motion_clips list) — same as UDPMotionSource.
-    2. floodnet_clip_path — directly load a single NPZ file (e.g. written by
-       Text2Humanoid's FloodNetFileBackend) as a motion named "floodnet_clip".
-       This is the preferred mode for connecting the Text2Humanoid offline
-       replay pipeline to the real tracking runtime.
+    1. floodnet_session_dir — a directory with chunk_0000.npz, chunk_0001.npz, ...
+       and a chunk_index.json manifest.  Chunks are loaded sequentially and
+       refilled automatically when the future horizon drops below the
+       floodnet_refill_watermark.  This is the recommended mode for continuous
+       replay from Text2Humanoid.
 
-    The source reuses the existing _load_motions() path so that the policy's
-    future-horizon consumption works without change.
+    2. floodnet_clip_path — a single NPZ file, loaded once as "floodnet_clip".
+
+    3. Static motions / motion_clips list — same as UDPMotionSource.
     """
 
     def __init__(self, policy: "TrackingPolicyRaw", policy_cfg: DictToClass):
+        self.floodnet_session_dir: Optional[Path] = None
         self.floodnet_clip_path: Optional[str] = None
-        raw = getattr(policy_cfg, "floodnet_clip_path", None)
-        if raw is not None and str(raw).strip():
-            self.floodnet_clip_path = str(raw).strip()
+        self._floodnet_next_chunk_idx: int = 0
+        self._floodnet_chunk_names: list[str] = []
+        self.floodnet_refill_watermark: int = 0
+        self.floodnet_autoplay: bool = False
+
+        raw_session = getattr(policy_cfg, "floodnet_session_dir", None)
+        if raw_session is not None and str(raw_session).strip():
+            d = Path(str(raw_session).strip())
+            if not d.is_absolute():
+                d = REAL_G1_ROOT / d
+            if d.is_dir():
+                self.floodnet_session_dir = d
+                self._floodnet_next_chunk_idx = 0
+                self._floodnet_chunk_names = self._read_chunk_manifest(d)
+                self.floodnet_refill_watermark = int(
+                    getattr(policy_cfg, "floodnet_refill_watermark", 30)
+                )
+                self.floodnet_autoplay = bool(
+                    getattr(policy_cfg, "floodnet_autoplay", False)
+                )
+
+        raw_clip = getattr(policy_cfg, "floodnet_clip_path", None)
+        if raw_clip is not None and str(raw_clip).strip():
+            self.floodnet_clip_path = str(raw_clip).strip()
 
         super().__init__(policy, policy_cfg)
 
+        # Session-scoped: load first chunk on init
+        if self.floodnet_session_dir is not None:
+            self._load_and_append_next_chunk()
+
+        # Single clip backward compat
         if self.floodnet_clip_path is not None:
             self._load_floodnet_clip(self.floodnet_clip_path)
 
-    def _load_floodnet_clip(self, path: str) -> None:
-        """Load a single NPZ clip exported by FloodNetFileBackend."""
-        p = Path(path)
-        if not p.is_absolute():
-            p = REAL_G1_ROOT / p
-        if not p.exists():
-            print(f"[FloodNetMotionSource] floodnet_clip_path not found: {p}")
-            return
+    @staticmethod
+    def _read_chunk_manifest(session_dir: Path) -> list[str]:
+        """Read chunk_index.json, fall back to glob if missing."""
+        manifest_path = session_dir / "chunk_index.json"
+        if manifest_path.exists():
+            import json
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return list(data.get("chunks", []))
+        # Fallback: glob chunk_*.npz
+        chunks = sorted(
+            [p.name for p in session_dir.glob("chunk_*.npz")],
+            key=lambda n: int(n.replace("chunk_", "").replace(".npz", "")),
+        )
+        return chunks
 
-        data = np.load(str(p), allow_pickle=True)
+    def _load_chunk_npz(self, path: Path) -> dict:
+        """Load a single chunk NPZ and return {joint_pos, root_quat, root_pos}."""
+        data = np.load(str(path), allow_pickle=True)
         joint_pos = data["dof_pos"].astype(np.float32)
         root_pos = data["root_pos"].astype(np.float32)
         root_rot_xyzw = data["root_rot"].astype(np.float32)
@@ -255,9 +292,7 @@ class FloodNetMotionSource(MotionSourceBase):
 
         joint_names = data.get("joint_names", None)
         if joint_names is None:
-            raise ValueError(
-                f"[FloodNetMotionSource] floodnet_clip_path is missing 'joint_names': {p}"
-            )
+            raise ValueError(f"[FloodNetMotionSource] Missing 'joint_names' in {path}")
         source_joint_names = []
         for n in joint_names.tolist():
             if isinstance(n, (bytes, np.bytes_)):
@@ -265,18 +300,91 @@ class FloodNetMotionSource(MotionSourceBase):
             else:
                 source_joint_names.append(str(n))
         joint_pos = remap_joint_array_by_names(
-            joint_pos, source_joint_names, self.policy.obs_joint_names
+            joint_pos, source_joint_names, self.policy.obs_joint_names,
         )
-
-        self.motions["floodnet_clip"] = {
+        return {
             "joint_pos": joint_pos,
             "root_quat": root_quat,
             "root_pos": root_pos,
         }
+
+    def _load_and_append_next_chunk(self) -> bool:
+        """Load the next chunk in the session and append via append_motion_from_tail.
+
+        Returns True if a chunk was appended, False if no more are available.
+        """
+        if self.floodnet_session_dir is None:
+            return False
+
+        # Re-read manifest in case new chunks arrived
+        self._floodnet_chunk_names = self._read_chunk_manifest(self.floodnet_session_dir)
+
+        if self._floodnet_next_chunk_idx >= len(self._floodnet_chunk_names):
+            return False
+
+        name = self._floodnet_chunk_names[self._floodnet_next_chunk_idx]
+        path = self.floodnet_session_dir / name
+        motion = self._load_chunk_npz(path)
+        self.motions[name] = motion
+        self._floodnet_next_chunk_idx += 1
+
+        name_no_ext = name.replace(".npz", "")
+        if self._floodnet_next_chunk_idx == 1:
+            # First chunk: align to current tail and append with transition
+            anchor = self.policy.read_ref_tail_state()
+            aligned = self._align_motion_to_anchor(motion, anchor)
+            tgt_first = {
+                "joint_pos": aligned["joint_pos"][0],
+                "root_quat": aligned["root_quat"][0],
+                "root_pos": aligned["root_pos"][0],
+            }
+            trans = self._build_transition_prefix(anchor, tgt_first)
+            seg = {
+                "joint_pos": np.concatenate([trans["joint_pos"], aligned["joint_pos"]], axis=0),
+                "root_quat": np.concatenate([trans["root_quat"], aligned["root_quat"]], axis=0),
+                "root_pos": np.concatenate([trans["root_pos"], aligned["root_pos"]], axis=0),
+            }
+        else:
+            # Subsequent chunk: directly append without re-alignment (continuous)
+            seg = motion
+
+        self.policy.append_ref_frames(seg)
+        self.policy.current_name = name_no_ext
+        print(
+            f"[FloodNetMotionSource] Loaded chunk '{name}' "
+            f"({motion['joint_pos'].shape[0]} frames), "
+            f"idx={self._floodnet_next_chunk_idx - 1}/{len(self._floodnet_chunk_names)}"
+        )
+        return True
+
+    def _load_floodnet_clip(self, path: str) -> None:
+        """Load a single NPZ clip as a named motion (backward compat)."""
+        p = Path(path)
+        if not p.is_absolute():
+            p = REAL_G1_ROOT / p
+        if not p.exists():
+            print(f"[FloodNetMotionSource] floodnet_clip_path not found: {p}")
+            return
+        motion = self._load_chunk_npz(p)
+        self.motions["floodnet_clip"] = motion
         print(
             f"[FloodNetMotionSource] Loaded floodnet clip '{p.name}' "
-            f"({joint_pos.shape[0]} frames)"
+            f"({motion['joint_pos'].shape[0]} frames)"
         )
+
+    def _future_horizon_frames(self) -> int:
+        if self.policy.ref_len <= 0:
+            return 0
+        return max(0, int(self.policy.ref_len - 1 - self.policy.ref_idx))
+
+    def post_step(self):
+        if self.floodnet_session_dir is None:
+            return
+        if not self.floodnet_autoplay:
+            return
+        h = self._future_horizon_frames()
+        if h <= self.floodnet_refill_watermark:
+            self._load_and_append_next_chunk()
 
     def request_motion(self, name: str) -> bool:
         if name not in self.motions:
