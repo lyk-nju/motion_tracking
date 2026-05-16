@@ -409,6 +409,11 @@ class SocketFloodNetSource(MotionSourceBase):
     the policy's reference buffer, bypassing file polling.
 
     Configure with motion_source: socket_floodnet in tracking.yaml.
+
+    Lifecycle:
+      - connected: True while TCP connection is live
+      - disconnect_reason: set on disconnect, cleared on reconnect
+      - deactivate(): clean shutdown, close socket
     """
 
     def __init__(self, policy: "TrackingPolicyRaw", policy_cfg: DictToClass):
@@ -416,7 +421,16 @@ class SocketFloodNetSource(MotionSourceBase):
         self.socket_port: int = int(getattr(policy_cfg, "socket_port", 15555))
         self._sock: socket.socket | None = None
         self._connected: bool = False
+        self._disconnect_reason: str = ""
         super().__init__(policy, policy_cfg)
+
+    @property
+    def connected(self) -> bool:
+        return self._connected
+
+    @property
+    def disconnect_reason(self) -> str:
+        return self._disconnect_reason
 
     def _connect(self) -> bool:
         if self._connected:
@@ -427,10 +441,28 @@ class SocketFloodNetSource(MotionSourceBase):
             self._sock.connect((self.socket_host, self.socket_port))
             self._sock.settimeout(2.0)
             self._connected = True
+            self._disconnect_reason = ""
             print(f"[SocketFloodNetSource] Connected to {self.socket_host}:{self.socket_port}")
             return True
-        except (ConnectionRefusedError, OSError):
+        except (ConnectionRefusedError, OSError) as e:
+            self._disconnect_reason = str(e)
             return False
+
+    def _mark_disconnected(self, reason: str) -> None:
+        self._connected = False
+        if self._sock is not None:
+            try: self._sock.close()
+            except OSError: pass
+        self._sock = None
+        self._disconnect_reason = reason
+        print(f"[SocketFloodNetSource] Disconnected: {reason}")
+
+    def deactivate(self):
+        if self._sock is not None:
+            try: self._sock.close()
+            except OSError: pass
+        self._sock = None
+        self._connected = False
 
     def _recv_exact(self, n: int) -> bytes:
         data = b""
@@ -460,11 +492,12 @@ class SocketFloodNetSource(MotionSourceBase):
                         count += 1
                 except socket.timeout:
                     break
-                except (ConnectionError, OSError):
-                    self._connected = False; self._sock = None
+                except (ConnectionError, OSError) as e:
+                    self._mark_disconnected(str(e))
                     break
         finally:
-            self._sock.settimeout(2.0)
+            if self._sock is not None:
+                self._sock.settimeout(2.0)
         return count
 
     def _handle_chunk(self, msg: dict) -> None:
