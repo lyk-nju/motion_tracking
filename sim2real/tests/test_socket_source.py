@@ -142,6 +142,219 @@ def test_motion_source_config_accepts_socket_floodnet():
     assert ms in ("udp", "vr", "floodnet", "socket_floodnet")
 
 
+# ---- Consumer-side timeout / disconnect smoke (Task 016) ----
+
+
+def _drain_until(source, expected: int, max_attempts: int = 20) -> int:
+    """Retry _drain_messages until expected chunks received or attempts exhausted."""
+    import time as time_mod
+    total = 0
+    for _ in range(max_attempts):
+        total += source._drain_messages()
+        if total >= expected:
+            break
+        time_mod.sleep(0.05)
+    return total
+
+
+def test_socket_source_disconnect_reason_on_server_close():
+    """Consumer disconnect_reason is set when server closes connection mid-session."""
+    import time as time_mod
+    from motion_sources import SocketFloodNetSource
+
+    port = 15610
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", port))
+    srv.listen(1)
+    srv.settimeout(2.0)
+
+    server_ready = threading.Event()
+
+    def _server():
+        server_ready.set()
+        try:
+            conn, _ = srv.accept()
+            conn.settimeout(2.0)
+            conn.sendall(_make_chunk_msg("s1", "c1", 4))
+            time_mod.sleep(0.3)
+            conn.close()
+        except socket.timeout:
+            pass
+
+    threading.Thread(target=_server, daemon=True).start()
+
+    cfg = DictToClass({"socket_host": "127.0.0.1", "socket_port": port,
+                       "motions": [], "motion_clips": [_default_clip()],
+                       "motion_source": "socket_floodnet"})
+    policy = _MockPolicy()
+    source = SocketFloodNetSource(policy, cfg)
+
+    server_ready.wait(timeout=2.0)
+    # Connect + receive with retries (timing-tolerant)
+    total = _drain_until(source, 1, max_attempts=10)
+    assert total == 1, f"expected 1 chunk, got {total}"
+    assert source.connected
+
+    time_mod.sleep(0.4)
+    n = source._drain_messages()
+    assert n == 0
+    assert not source.connected
+    assert source.disconnect_reason != "", "disconnect_reason should be non-empty after server close"
+
+    source.deactivate()
+    srv.close()
+
+
+def test_socket_source_no_reconnect_when_server_gone():
+    """After disconnect, source stays disconnected and does not hang."""
+    import time as time_mod
+    from motion_sources import SocketFloodNetSource
+
+    port = 15611
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", port))
+    srv.listen(1)
+    srv.settimeout(2.0)
+
+    server_ready = threading.Event()
+
+    def _server():
+        server_ready.set()
+        try:
+            conn, _ = srv.accept()
+            conn.settimeout(2.0)
+            conn.sendall(_make_chunk_msg("s1", "c1", 4))
+            time_mod.sleep(0.2)
+            conn.close()
+        except socket.timeout:
+            pass
+        srv.close()
+
+    threading.Thread(target=_server, daemon=True).start()
+
+    cfg = DictToClass({"socket_host": "127.0.0.1", "socket_port": port,
+                       "motions": [], "motion_clips": [_default_clip()],
+                       "motion_source": "socket_floodnet"})
+    policy = _MockPolicy()
+    source = SocketFloodNetSource(policy, cfg)
+
+    server_ready.wait(timeout=2.0)
+    total = _drain_until(source, 1, max_attempts=10)
+    assert total == 1
+
+    # Server is gone — multiple drain calls should return 0 without hanging
+    time_mod.sleep(0.3)
+    for _ in range(5):
+        n = source._drain_messages()
+        assert n == 0, "should get 0 chunks after server gone"
+    assert not source.connected
+    source.deactivate()
+
+
+def test_socket_source_drain_when_no_server():
+    """When no server is listening, drain returns 0 and disconnect_reason is set."""
+    from motion_sources import SocketFloodNetSource
+
+    port = 15612
+    cfg = DictToClass({"socket_host": "127.0.0.1", "socket_port": port,
+                       "motions": [], "motion_clips": [_default_clip()],
+                       "motion_source": "socket_floodnet"})
+    policy = _MockPolicy()
+    source = SocketFloodNetSource(policy, cfg)
+
+    assert not source.connected
+    assert source.disconnect_reason == ""
+
+    n = source._drain_messages()
+    assert n == 0
+    assert not source.connected
+    assert source.disconnect_reason != "", \
+        f"disconnect_reason should be set on connection refused, got: {source.disconnect_reason!r}"
+    source.deactivate()
+
+
+def test_socket_source_reconnect_clears_disconnect_reason():
+    """After deactivate + fresh connect, disconnect_reason is cleared."""
+    import time as time_mod
+    from motion_sources import SocketFloodNetSource
+
+    port = 15613
+
+    server_ready1 = threading.Event()
+
+    def _server1():
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("127.0.0.1", port))
+        srv.listen(1)
+        srv.settimeout(2.0)
+        server_ready1.set()
+        try:
+            conn, _ = srv.accept()
+            conn.settimeout(2.0)
+            conn.sendall(_make_chunk_msg("s1", "c1", 4))
+            time_mod.sleep(0.3)
+            conn.close()
+        except socket.timeout:
+            pass
+        srv.close()
+
+    threading.Thread(target=_server1, daemon=True).start()
+
+    cfg = DictToClass({"socket_host": "127.0.0.1", "socket_port": port,
+                       "motions": [], "motion_clips": [_default_clip()],
+                       "motion_source": "socket_floodnet"})
+    policy = _MockPolicy()
+    source = SocketFloodNetSource(policy, cfg)
+
+    server_ready1.wait(timeout=2.0)
+    total1 = _drain_until(source, 1, max_attempts=10)
+    assert total1 == 1
+    assert source.connected
+
+    # Wait for server to close → detect disconnect
+    time_mod.sleep(0.5)
+    source._drain_messages()
+    assert not source.connected
+    reason_before = source.disconnect_reason
+    assert reason_before != ""
+
+    # Round 2: new server, deactivate + reconnect
+    source.deactivate()
+    assert not source.connected
+
+    server_ready2 = threading.Event()
+
+    def _server2():
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("127.0.0.1", port))
+        srv.listen(1)
+        srv.settimeout(2.0)
+        server_ready2.set()
+        try:
+            conn, _ = srv.accept()
+            conn.settimeout(2.0)
+            conn.sendall(_make_chunk_msg("s1", "c2", 6))
+            time_mod.sleep(0.3)
+            conn.close()
+        except socket.timeout:
+            pass
+        srv.close()
+
+    threading.Thread(target=_server2, daemon=True).start()
+
+    server_ready2.wait(timeout=2.0)
+    total2 = _drain_until(source, 1, max_attempts=10)
+    assert total2 == 1, f"reconnect should get 1 chunk, got {total2}"
+    assert source.connected
+    assert source.disconnect_reason == "", \
+        f"disconnect_reason should be cleared on reconnect, got: {source.disconnect_reason!r}"
+    source.deactivate()
+
+
 if __name__ == "__main__":
     import sys; sys.path.insert(0, "sim2real/src")
     test_socket_source_instantiation(); print("OK: instantiation")

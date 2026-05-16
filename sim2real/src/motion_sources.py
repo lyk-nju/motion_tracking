@@ -482,6 +482,9 @@ class SocketFloodNetSource(MotionSourceBase):
             while True:
                 try:
                     header = self._sock.recv(4)
+                    if len(header) == 0:
+                        self._mark_disconnected("peer closed connection")
+                        break
                     if len(header) < 4:
                         break
                     msg_len = struct.unpack(">I", header)[0]
