@@ -16,7 +16,7 @@
 #   3. Run: uv run src/deploy.py --sim2sim --tracking-config config/tracking_floodnet.yaml
 
 motion_source: "floodnet"
-floodnet_clip_path: "assets/data/example_reference_chunk.npz"
+floodnet_clip_path: "/home/lai/大学/text2motion/Text2Humanoid/artifacts/retargeted/reference_e549d75ba56d.npz"
 
 # Uncomment for session-scoped multi-chunk mode:
 # floodnet_session_dir: "path/to/floodnet_clips/<session_id>"
@@ -25,7 +25,7 @@ floodnet_clip_path: "assets/data/example_reference_chunk.npz"
 
 # ---- reuse existing fields from tracking.yaml ----
 future_steps: [0, 1, 2, 3, 4, -1, -2, -4, -8, -12, -16]
-policy_path: "assets/ckpts/G1TRACKING-250403-1/policy.onnx"
+policy_path: "assets/ckpts/G1TRACKING-03-16_14-15_0315.2/policy.onnx"
 compliance_flag_value: 1.0
 compliance_flag_threshold: 10.0
 transition_steps: 100
