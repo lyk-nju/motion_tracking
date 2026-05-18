@@ -35,6 +35,10 @@ def load_npz(path: str) -> dict:
     data = np.load(path, allow_pickle=True)
     dof_pos = data["dof_pos"].astype(np.float32)
     root_pos = data["root_pos"].astype(np.float32)
+    root_rot_xyzw = data["root_rot"].astype(np.float32)
+    root_rot_wxyz = np.concatenate(
+        [root_rot_xyzw[:, 3:4], root_rot_xyzw[:, :3]], axis=-1,
+    )
     joint_names_raw = data.get("joint_names", None)
     if joint_names_raw is not None:
         joint_names = []
@@ -47,7 +51,11 @@ def load_npz(path: str) -> dict:
         joint_names = DATASET_JOINT_ORDER
     print(f"Loaded: {dof_pos.shape[0]} frames, {dof_pos.shape[1]} dofs")
     print(f"Joint names: {joint_names}")
-    return {"dof_pos": dof_pos, "root_pos": root_pos, "joint_names": joint_names}
+    print(f"Root rot first frame (wxyz): {root_rot_wxyz[0]}")
+    return {
+        "dof_pos": dof_pos, "root_pos": root_pos,
+        "root_rot_wxyz": root_rot_wxyz, "joint_names": joint_names,
+    }
 
 
 def main():
@@ -60,6 +68,7 @@ def main():
     data = load_npz(path)
     dof_pos = data["dof_pos"]
     root_pos = data["root_pos"]
+    root_rot_wxyz = data["root_rot_wxyz"]
     joint_names = data["joint_names"]
 
     model = mujoco.MjModel.from_xml_path(str(XML_PATH))
@@ -101,9 +110,9 @@ def main():
                     time.sleep(0.01)
                     continue
 
-            # Set root free joint
+            # Set root free joint (pos + quat wxyz)
             mjdata.qpos[0:3] = root_pos[f]
-            mjdata.qpos[3:7] = [1, 0, 0, 0]
+            mjdata.qpos[3:7] = root_rot_wxyz[f]
 
             # Set joint positions
             for i, jid in enumerate(mj_joint_ids):
