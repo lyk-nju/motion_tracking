@@ -363,16 +363,20 @@ class FloodNetMotionSource(MotionSourceBase):
     def _load_floodnet_clip(self, path: str) -> None:
         """Load a single NPZ clip as a named motion (backward compat)."""
         p = Path(path)
+        original = str(p)
         if not p.is_absolute():
             p = REAL_G1_ROOT / p
+        print(f"[FloodNetMotionSource] floodnet_clip_path raw: {original}")
+        print(f"[FloodNetMotionSource] floodnet_clip_path resolved: {p}")
         if not p.exists():
-            print(f"[FloodNetMotionSource] floodnet_clip_path not found: {p}")
+            print(f"[FloodNetMotionSource] ERROR: file not found: {p}")
             return
         motion = self._load_chunk_npz(p)
         self.motions["floodnet_clip"] = motion
         print(
             f"[FloodNetMotionSource] Loaded floodnet clip '{p.name}' "
-            f"({motion['joint_pos'].shape[0]} frames)"
+            f"({motion['joint_pos'].shape[0]} frames, "
+            f"dof dim={motion['joint_pos'].shape[1]})"
         )
 
     def _future_horizon_frames(self) -> int:
@@ -385,7 +389,13 @@ class FloodNetMotionSource(MotionSourceBase):
         if self.floodnet_clip_path is not None and not self._floodnet_clip_appended:
             if self.policy.current_done:
                 self._floodnet_clip_appended = True
-                self.request_motion("floodnet_clip")
+                ok = self.request_motion("floodnet_clip")
+                print(f"[FloodNetMotionSource] auto-append 'floodnet_clip': {'OK' if ok else 'FAILED'}, "
+                      f"ref_len={self.policy.ref_len} ref_idx={self.policy.ref_idx}")
+            else:
+                print(f"[FloodNetMotionSource] waiting for current to finish before auto-append "
+                      f"(name={self.policy.current_name}, done={self.policy.current_done}, "
+                      f"ref_len={self.policy.ref_len} ref_idx={self.policy.ref_idx})")
 
         if self.floodnet_session_dir is None:
             return

@@ -3,24 +3,36 @@ import sys
 import time
 import yaml
 from multiprocessing import Process, Value
+from pathlib import Path
 from typing import Dict, Optional
 
 import numpy as np
 
-from unitree_sdk2py.core.channel import ChannelPublisher, ChannelSubscriber, ChannelFactoryInitialize
-from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowCmd_, unitree_hg_msg_dds__LowState_
-from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_ as LowCmdHG
-from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowState_ as LowStateHG
-from unitree_sdk2py.utils.crc import CRC
-
-from common.command_helper import create_damping_cmd, create_zero_cmd, init_cmd_hg, MotorMode
-from common.remote_controller import RemoteController, KeyMap
 from common.utils import DictToClass, Timer
-from common.joint_mapper import create_isaac_to_real_mapper
-
 from policy import Policy, TrackingPolicyRaw
-from pathlib import Path
-from paths import REAL_G1_ROOT
+
+# Real-robot imports (only available on G1 hardware)
+try:
+    from unitree_sdk2py.core.channel import ChannelPublisher, ChannelSubscriber, ChannelFactoryInitialize
+    from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowCmd_, unitree_hg_msg_dds__LowState_
+    from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_ as LowCmdHG
+    from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowState_ as LowStateHG
+    from unitree_sdk2py.utils.crc import CRC
+    from common.command_helper import create_damping_cmd, create_zero_cmd, init_cmd_hg, MotorMode
+    from common.remote_controller import RemoteController, KeyMap
+    from common.joint_mapper import create_isaac_to_real_mapper
+    from paths import REAL_G1_ROOT
+    _HAS_UNITREE = True
+except ImportError:
+    _HAS_UNITREE = False
+    ChannelPublisher = ChannelSubscriber = ChannelFactoryInitialize = None
+    LowCmdHG = LowStateHG = None
+    unitree_hg_msg_dds__LowCmd_ = unitree_hg_msg_dds__LowState_ = None
+    CRC = None
+    create_damping_cmd = create_zero_cmd = init_cmd_hg = MotorMode = None
+    RemoteController = KeyMap = None
+    create_isaac_to_real_mapper = None
+    REAL_G1_ROOT = Path.cwd()
 
 np.set_printoptions(formatter={'float': lambda x: "{0:0.2f}".format(x)})
 
@@ -87,9 +99,17 @@ class Controller:
         self.wait_for_low_state()
         init_cmd_hg(self.low_cmd, self.mode_machine_, self.mode_pr_)
 
+        print(f"[Controller] tracking-config: {tracking_cfg_path}")
+        tracking_cfg_dict = get_config(self.tracking_cfg_path)
+        print(f"[Controller] motion_source: {getattr(tracking_cfg_dict, 'motion_source', 'N/A')}")
+        fp = getattr(tracking_cfg_dict, 'floodnet_clip_path', None)
+        if fp:
+            print(f"[Controller] floodnet_clip_path: {fp}")
         self.policies = {
-            "tracking": TrackingPolicyRaw("tracking", get_config(self.tracking_cfg_path), self),
+            "tracking": TrackingPolicyRaw("tracking", tracking_cfg_dict, self),
         }
+        p = self.policies["tracking"]
+        print(f"[Controller] policy ref_len={p.ref_len} ref_idx={p.ref_idx} done={p.current_done} name={p.current_name}")
         self.current_policy: Optional[Policy] = None
         self.pending_policy: Optional[Policy] = None
 
