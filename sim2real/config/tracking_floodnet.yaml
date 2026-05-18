@@ -17,6 +17,7 @@
 
 motion_source: "floodnet"
 floodnet_clip_path: "/home/lai/大学/text2motion/Text2Humanoid/artifacts/retargeted/reference_e549d75ba56d.npz"
+floodnet_loop: true
 
 # Uncomment for session-scoped multi-chunk mode:
 # floodnet_session_dir: "path/to/floodnet_clips/<session_id>"

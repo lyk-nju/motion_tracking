@@ -238,6 +238,7 @@ class FloodNetMotionSource(MotionSourceBase):
         self.floodnet_refill_watermark: int = 0
         self.floodnet_autoplay: bool = False
         self._floodnet_clip_appended: bool = False
+        self.floodnet_loop: bool = bool(getattr(policy_cfg, "floodnet_loop", False))
 
         raw_session = getattr(policy_cfg, "floodnet_session_dir", None)
         if raw_session is not None and str(raw_session).strip():
@@ -394,17 +395,18 @@ class FloodNetMotionSource(MotionSourceBase):
         return max(0, int(self.policy.ref_len - 1 - self.policy.ref_idx))
 
     def post_step(self):
-        # Single-clip mode: auto-append once on first call
-        if self.floodnet_clip_path is not None and not self._floodnet_clip_appended:
+        # Single-clip mode: auto-append once (or loop if floodnet_loop is enabled)
+        if self.floodnet_clip_path is not None:
             if self.policy.current_done:
-                self._floodnet_clip_appended = True
-                ok = self.request_motion("floodnet_clip")
-                print(f"[FloodNetMotionSource] auto-append 'floodnet_clip': {'OK' if ok else 'FAILED'}, "
-                      f"ref_len={self.policy.ref_len} ref_idx={self.policy.ref_idx}")
-            else:
-                print(f"[FloodNetMotionSource] waiting for current to finish before auto-append "
-                      f"(name={self.policy.current_name}, done={self.policy.current_done}, "
-                      f"ref_len={self.policy.ref_len} ref_idx={self.policy.ref_idx})")
+                if not self._floodnet_clip_appended or self.floodnet_loop:
+                    self._floodnet_clip_appended = True
+                    ok = self.request_motion("floodnet_clip")
+                    label = "loop" if self.floodnet_loop else "auto-append"
+                    print(f"[FloodNetMotionSource] {label} 'floodnet_clip': {'OK' if ok else 'FAILED'}, "
+                          f"ref_len={self.policy.ref_len} ref_idx={self.policy.ref_idx}")
+            elif not self._floodnet_clip_appended:
+                # Only log waiting state before first append
+                pass
 
         if self.floodnet_session_dir is None:
             return
