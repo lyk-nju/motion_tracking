@@ -16,6 +16,8 @@ class Timer(object):
     or management. Only use this class on Linux platforms.
     '''
     def __init__(self, interval: float) -> None:
+        import select
+        self._select = select
         self.__epl, self.__tfd = self.__create_timerfd(interval)
 
     @staticmethod
@@ -35,7 +37,7 @@ class Timer(object):
         '''
         events = self.__epl.poll(-1)
         for fd, event in events:
-            if fd == self.__tfd.fileno() and event & select.EPOLLIN:
+            if fd == self.__tfd.fileno() and event & self._select.EPOLLIN:
                 self.__tfd.read()
 
 # =========================================
