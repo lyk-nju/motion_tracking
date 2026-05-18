@@ -259,6 +259,15 @@ class FloodNetMotionSource(MotionSourceBase):
         if raw_clip is not None and str(raw_clip).strip():
             self.floodnet_clip_path = str(raw_clip).strip()
 
+        # Ensure a 'default' motion clip exists (required by _load_motions)
+        if not getattr(policy_cfg, "motion_clips", None):
+            policy_cfg.motion_clips = [{
+                "name": "default",
+                "joint_pos": [[0.0] * 29],
+                "root_quat": [1.0, 0.0, 0.0, 0.0],
+                "root_pos": [0.0, 0.0, 0.78],
+            }]
+
         super().__init__(policy, policy_cfg)
 
         # Session-scoped: load first chunk on init
