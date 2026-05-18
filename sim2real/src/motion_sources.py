@@ -237,6 +237,7 @@ class FloodNetMotionSource(MotionSourceBase):
         self._floodnet_chunk_names: list[str] = []
         self.floodnet_refill_watermark: int = 0
         self.floodnet_autoplay: bool = False
+        self._floodnet_clip_appended: bool = False
 
         raw_session = getattr(policy_cfg, "floodnet_session_dir", None)
         if raw_session is not None and str(raw_session).strip():
@@ -380,6 +381,12 @@ class FloodNetMotionSource(MotionSourceBase):
         return max(0, int(self.policy.ref_len - 1 - self.policy.ref_idx))
 
     def post_step(self):
+        # Single-clip mode: auto-append once on first call
+        if self.floodnet_clip_path is not None and not self._floodnet_clip_appended:
+            if self.policy.current_done:
+                self._floodnet_clip_appended = True
+                self.request_motion("floodnet_clip")
+
         if self.floodnet_session_dir is None:
             return
         if not self.floodnet_autoplay:
